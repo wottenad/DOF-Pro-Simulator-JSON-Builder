@@ -1,0 +1,11 @@
+# Keep the publishable app folder clean.
+
+node_modules/
+.npm-cache/
+.pw-browsers/
+output/
+tmp/
+tmp_*/
+*.log
+Thumbs.db
+.DS_Store

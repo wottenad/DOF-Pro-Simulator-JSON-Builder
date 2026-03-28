@@ -1,0 +1,15 @@
+{
+  "name": "codex-dof-pro-sim",
+  "version": "1.2.0",
+  "main": "app_V1.2.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}
