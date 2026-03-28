@@ -1,6 +1,6 @@
-# DOF Pro-Series Simulator V1.2
+# DOF Pro Simulator/JSON Builder V1.2
 
-DOF Pro-Series Simulator is a browser-based workflow tool for **DirectOutput Framework (DOF)** development, preview, and table-specific editing.
+DOF Pro Simulator/JSON Builder is a browser-based workflow tool for **DirectOutput Framework (DOF)** development, preview, and table-specific editing.
 
 It combines four major capabilities in one app:
 
