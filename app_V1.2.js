@@ -2157,6 +2157,23 @@ const App = {
         return await this._workspaceCacheWriteQueue;
     },
 
+    async _removeWorkspaceSlot(slotId) {
+        if (!slotId) return;
+        this._workspaceCacheWriteQueue = (this._workspaceCacheWriteQueue || Promise.resolve()).then(async () => {
+            try {
+                const workspace = (await this._readWorkspaceCache()) || { version: 1, slots: {} };
+                if (!workspace?.slots || !workspace.slots[slotId]) return;
+                delete workspace.slots[slotId];
+                workspace.updatedAt = Date.now();
+                await this._writeWorkspaceCache(workspace);
+                this._updateWorkspaceMeta(workspace);
+            } catch (e) {
+                console.warn('[Workspace] Failed to remove slot', slotId, e);
+            }
+        });
+        return await this._workspaceCacheWriteQueue;
+    },
+
     _getDefaultDofFolderMeta() {
         try {
             return JSON.parse(localStorage.getItem(this.DEFAULT_DOF_FOLDER_META_KEY) || 'null');
@@ -2431,6 +2448,33 @@ const App = {
         };
     },
 
+    async _indexDefaultDofFolderAssets(entries = [], folderName = '') {
+        const rootEntries = Array.from(entries || []).filter(Boolean);
+        const gifEntries = rootEntries.filter(entry => /\.gif$/i.test(entry?.name || ''));
+        const gifFiles = [];
+        const gifNameMap = new Map();
+
+        for (const entry of gifEntries) {
+            if (typeof entry?.getFile !== 'function') continue;
+            try {
+                const file = await entry.getFile();
+                if (!file) continue;
+                gifFiles.push(file);
+                const key = String(file.name || '').toLowerCase();
+                if (key && !gifNameMap.has(key)) gifNameMap.set(key, file);
+            } catch (e) {
+                console.warn('[DOF Folder] Could not index default-folder GIF asset:', entry?.name || '(unknown)', e);
+            }
+        }
+
+        this.data.dofFolderAssets = {
+            folderName: folderName || '',
+            rootFiles: gifFiles.slice(),
+            gifFiles,
+            gifNameMap
+        };
+    },
+
     _splitRomAliases(raw = '') {
         return String(raw || '')
             .split(/[,\n\r;|]+/)
@@ -2503,6 +2547,7 @@ const App = {
         }
 
         const { files: entries, ignoredDirs } = await this._collectDefaultDofFolderEntries(handle);
+        await this._indexDefaultDofFolderAssets(entries, handle.name || 'Selected folder');
         const iniHandles = entries.filter(entry => /^directoutputconfig.*\.ini$/i.test(entry.name || ''));
         const cabinetXmlHandle =
             this._findDefaultFolderFile(entries, entry => /^cabinet\.xml$/i.test(entry.name || ''));
@@ -2643,14 +2688,7 @@ const App = {
             hintEl.textContent = builderSummary.text;
             return;
         }
-        const anim = this.data?.animSim;
-        if (anim?.sessionActive && anim.gifFrames?.length) {
-            const gifName = anim.gifFilename || 'loaded GIF';
-            const frameCount = anim.gifFrames.length;
-            hintEl.textContent = `Source: current Anim Sim GIF session (${gifName}, ${frameCount} frame${frameCount === 1 ? '' : 's'}). Bitmaps use that loaded session, not the active ROM, unless you load the matching package for this table.`;
-            return;
-        }
-        hintEl.textContent = 'Source: load Anim Sim Effects + GIF in Configuration to use bitmap rows. Bitmap preview comes from that current Anim Sim session, not automatically from the selected table.';
+        hintEl.textContent = 'Source: import a JSON table, then load its matching table bitmap GIF for Builder preview.';
     },
 
     _workspaceCacheEntryToFiles(slot) {
@@ -2779,11 +2817,15 @@ const App = {
             let animEffects = null;
             let animGif = null;
             let animDb = null;
+            let builderJsonSlot = null;
+            let builderBitmapSlot = null;
 
             for (const [slotId, slot] of slots) {
                 if (slotId === 'as-f-effects') { animEffects = slot; continue; }
                 if (slotId === 'as-f-gif') { animGif = slot; continue; }
                 if (slotId === 'as-f-db') { animDb = slot; continue; }
+                if (slotId === 'bj-f-json') { builderJsonSlot = slot; continue; }
+                if (slotId === 'bj-f-bitmap') { builderBitmapSlot = slot; continue; }
                 await this._replayWorkspaceSlot(slotId, slot);
             }
 
@@ -2823,9 +2865,37 @@ const App = {
             }
 
             this.confirmSession();
+            if (builderJsonSlot?.files?.length && window.BuilderJSON?.importConfigFile) {
+                const jsonFile = this._workspaceCacheEntryToFiles(builderJsonSlot)[0] || null;
+                if (jsonFile) {
+                    await window.BuilderJSON.importConfigFile(jsonFile, {
+                        cacheWorkspace: false,
+                        preserveBitmapCache: !!builderBitmapSlot?.files?.length,
+                        checkShapes: false
+                    });
+                }
+            }
             if (typeof Builder !== 'undefined') {
                 Builder.prepareResumeFromSavedState();
                 if (Builder._initialized) Builder.restoreSavedState();
+            }
+            if (window.BuilderJSON?.jsonMode) {
+                if (builderBitmapSlot?.files?.length && window.BuilderJSON?.loadTableBitmap) {
+                    const bitmapFile = this._workspaceCacheEntryToFiles(builderBitmapSlot)[0] || null;
+                    if (bitmapFile) {
+                        try {
+                            await window.BuilderJSON.loadTableBitmap(bitmapFile, { cacheWorkspace: false });
+                        } catch (err) {
+                            console.warn('[BuilderJSON] Could not restore cached table bitmap after workspace resume:', err);
+                        }
+                    }
+                } else if (window.BuilderJSON?.importedConfig?.rom) {
+                    try {
+                        await window.BuilderJSON.tryAutoLoadRomBitmap();
+                    } catch (err) {
+                        console.warn('[BuilderJSON] Could not auto-load ROM bitmap after workspace resume:', err);
+                    }
+                }
             }
         } catch (e) {
             console.error('[Workspace] Resume failed:', e);
@@ -8367,7 +8437,7 @@ const Builder = {
         btn.classList.toggle('dob-toggle-active', this.isVisible);
         btn.textContent = this.isVisible ? 'Back to Simulator' : 'DOF Builder';
         const titleEl = document.getElementById('app-title-main');
-        if (titleEl) titleEl.textContent = this.isVisible ? 'PRO SIMULATOR V1.2 - DOF BUILDER' : 'PRO SIMULATOR V1.2';
+        if (titleEl) titleEl.textContent = this.isVisible ? 'PRO SIMULATOR / JSON BUILDER V1.2 - DOF BUILDER' : 'PRO SIMULATOR / JSON BUILDER V1.2';
 
         if (this.isVisible) {
             if (!this._initialized) this._doInit();
@@ -10132,7 +10202,7 @@ const Builder = {
             const now = Date.now();
             const source = Array.isArray(layerSource) ? layerSource : this.layers;
             const builderBitmap = window.BuilderJSON?._getPreviewBitmapSource?.() || null;
-            const bitmapFrames = builderBitmap?.frames?.length ? builderBitmap.frames : (App?.data?.animSim?.gifFrames || null);
+            const bitmapFrames = builderBitmap?.frames?.length ? builderBitmap.frames : null;
             const frame = sharedMatrixEval({
                 now,
                 cols: this.previewCols,
@@ -10142,8 +10212,8 @@ const Builder = {
                 shapes: App?.data?.shapes,
                 shapeAtlas: App?.data?.shapeAtlas,
                 bitmapFrames,
-                bitmapWidth: builderBitmap?.width || App?.data?.animSim?.gifWidth || 0,
-                bitmapHeight: builderBitmap?.height || App?.data?.animSim?.gifHeight || 0,
+                bitmapWidth: builderBitmap?.width || 0,
+                bitmapHeight: builderBitmap?.height || 0,
                 bitmapTrim: Number(App?.data?.bitmapTrim ?? 55) / 100,
                 opacityAtTime: (layer, info) => info.isBPWSpatial
                     ? 1.0

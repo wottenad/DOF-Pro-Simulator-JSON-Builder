@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>DOF Pro-Series Simulator V1.2</title>
+    <title>DOF Pro Simulator / JSON Builder V1.2</title>
 <link rel="stylesheet" href="style_V1.2.css?v=1.2.001">
     <style>
     .toy-label.multi-layer { font-style: italic; font-weight: 500; }
@@ -435,7 +435,7 @@
 <body data-theme="blueprint">
 
 <header>
-    <div class="brand">DOF <span id="app-title-main">PRO SIMULATOR V1.2</span></div>
+    <div class="brand">DOF <span id="app-title-main">PRO SIMULATOR / JSON BUILDER V1.2</span></div>
     <div class="header-controls">
         <div id="inspector-active-indicator" style="display:none; align-items:center; gap:10px; margin-right:20px;">
             <div class="inspector-badge">INSPECTOR ACTIVE</div>
@@ -1072,7 +1072,7 @@
             <div class="dob-acc" data-acc-id="bitmap">
                 <div class="dob-acc-head" onclick="Builder.toggleAcc('bitmap')">
                     <span class="dob-acc-icon" id="dob-acc-bitmap-icon">v</span>
-                    <span class="dob-acc-title" title="Define bitmap crop and animation parameters for GIF-backed matrix effects. Load a table GIF here for JSON Builder preview, or fall back to the current Animation Simulator GIF session.">BITMAP</span>
+                    <span class="dob-acc-title" title="Define bitmap crop and animation parameters for GIF-backed matrix effects. Load the matching table GIF here for JSON Builder preview.">BITMAP</span>
                     <span class="dob-acc-sub">ABL ABT ABW ABH ABF AAC AAF AAD AAS AAB</span>
                     <button class="dob-btn dob-btn-sm dob-clear-acc" onclick="event.stopPropagation();Builder.clearAccordion('bitmap')" title="Reset bitmap crop and animation controls">Clear All</button>
                 </div>
@@ -1142,7 +1142,7 @@
                             <span class="dob-inline-tag">ABF</span>
                             <input type="number" id="dob-abf" min="0" max="99999" value="" class="dob-num-box" placeholder="0" oninput="BuilderJSON.handleBitmapAuthoringChange('dob-abf')">
                         </div>
-                        <span class="dob-tip" title="ABF: Base frame index from the active bitmap source. Builder uses the table bitmap loaded in this section first, then falls back to the current Animation Simulator GIF session if no table bitmap is loaded.">?</span>
+                        <span class="dob-tip" title="ABF: Base frame index from the active table bitmap source loaded in this section.">?</span>
                     </div>
 
                     <div class="dob-row dob-row-compact">

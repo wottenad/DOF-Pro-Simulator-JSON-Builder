@@ -2,6 +2,9 @@
 
 DOF Pro Simulator/JSON Builder is a browser-based workflow tool for **DirectOutput Framework (DOF)** development, preview, and table-specific editing.
 
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version](https://img.shields.io/badge/version-v1.2-blue.svg)
+
 It combines four major capabilities in one app:
 
 - **DOF simulator** for testing standard DOF effects against your cabinet layout

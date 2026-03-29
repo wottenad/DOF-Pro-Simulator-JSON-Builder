@@ -216,10 +216,10 @@ const BuilderJSON = {
         return workspace;
     },
 
-    _scrollElementIntoWorkspaceView(el, opts = {}) {
-        if (!el) return;
-        const scroller = this._getWorkspaceScrollContainer();
-        if (!scroller) return;
+    _scrollElementIntoScrollerView(scroller, el, opts = {}) {
+        if (!el || !scroller) return;
+        const canScroll = (scroller.scrollHeight > (scroller.clientHeight + 1)) || (scroller.scrollWidth > (scroller.clientWidth + 1));
+        if (!canScroll) return;
         const align = opts.align === 'start' ? 'start' : (opts.align === 'center' ? 'center' : 'nearest');
         const margin = Number.isFinite(opts.margin) ? opts.margin : 10;
         const elRect = el.getBoundingClientRect();
@@ -245,6 +245,36 @@ const BuilderJSON = {
         if (targetTop !== null) {
             scroller.scrollTo({ top: targetTop, behavior: opts.behavior || 'smooth' });
         }
+    },
+
+    _scrollElementIntoWorkspaceView(el, opts = {}) {
+        if (!el) return;
+        const scroller = this._getWorkspaceScrollContainer();
+        if (!scroller) return;
+        this._scrollElementIntoScrollerView(scroller, el, opts);
+    },
+
+    _findScrollableAncestor(el, stopAt = null) {
+        let node = el?.parentElement || null;
+        while (node && node !== stopAt && node !== document.body && node !== document.documentElement) {
+            const style = window.getComputedStyle(node);
+            const overflowY = `${style.overflowY || ''} ${style.overflow || ''}`;
+            const canScrollY = /(auto|scroll|overlay)/i.test(overflowY);
+            if (canScrollY && node.scrollHeight > (node.clientHeight + 1)) return node;
+            node = node.parentElement;
+        }
+        return null;
+    },
+
+    _scrollElementIntoNearestView(el, opts = {}) {
+        if (!el) return;
+        const workspace = document.querySelector('.dob-workspace');
+        const localScroller = this._findScrollableAncestor(el, workspace);
+        if (localScroller) {
+            this._scrollElementIntoScrollerView(localScroller, el, opts);
+        }
+        this._scrollElementIntoWorkspaceView(el, opts);
+        this._resetDocumentScrollIfNeeded();
     },
 
     _resetDocumentScrollIfNeeded() {
@@ -855,7 +885,7 @@ const BuilderJSON = {
         }
     },
 
-    async loadTableBitmap(file) {
+    async loadTableBitmap(file, opts = {}) {
         if (!(this.jsonMode && this.importedConfig?.table)) {
             alert('Import a JSON table first, then load its bitmap GIF.');
             return false;
@@ -884,6 +914,13 @@ const BuilderJSON = {
             this._refreshBitmapUiState();
             this._setStatus(`Loaded table bitmap ${file.name} for ${this._currentTableName()}.`, '#4caf50');
             if (Builder._previewScene) Builder._resetPreviewTiming();
+            if (opts.cacheWorkspace !== false && typeof App !== 'undefined' && typeof App._cacheWorkspaceSlot === 'function') {
+                try {
+                    await App._cacheWorkspaceSlot('bj-f-bitmap', [file], file.name || 'table-bitmap.gif');
+                } catch (e) {
+                    console.warn('[BuilderJSON] Could not cache table bitmap GIF:', e);
+                }
+            }
             return true;
         } catch (err) {
             this._refreshBitmapUiState();
@@ -896,6 +933,11 @@ const BuilderJSON = {
         const hadBitmap = !!(this._tableBitmapSource?.frames?.length);
         this._tableBitmapSource = null;
         this._refreshBitmapUiState(opts);
+        if (!opts.preserveCache && typeof App !== 'undefined' && typeof App._removeWorkspaceSlot === 'function') {
+            App._removeWorkspaceSlot('bj-f-bitmap').catch?.(err => {
+                console.warn('[BuilderJSON] Could not clear cached table bitmap slot:', err);
+            });
+        }
         if (!opts.silent && hadBitmap) this._setStatus('Table bitmap cleared for Builder preview.', '#8aacca');
     },
 
@@ -4233,22 +4275,41 @@ const BuilderJSON = {
     // 
     handleImport(input) {
         const file = input.files[0]; if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const text = e.target.result;
-            // INI file  parse [Variables DOF] as override
-            if (file.name.toLowerCase().endsWith('.ini')) {
-                this._parseVariablesFromINI(text);
-                return;
-            }
+        this.importConfigFile(file).catch(err => {
+            alert('JSON import failed: ' + (err?.message || err));
+        }).finally(() => {
+            input.value = '';
+        });
+    },
+
+    async importConfigFile(file, opts = {}) {
+        if (!file) return false;
+        const text = await file.text();
+        if (file.name.toLowerCase().endsWith('.ini')) {
+            this._parseVariablesFromINI(text);
+            return true;
+        }
+        let json = null;
+        try {
+            json = JSON.parse(text);
+        } catch (err) {
+            alert('JSON parse error: ' + err.message);
+            return false;
+        }
+        if (!json?.config) {
+            alert('Invalid JSON  missing config.');
+            return false;
+        }
+        this._processImport(json, { preserveBitmapCache: !!opts.preserveBitmapCache });
+        if (opts.checkShapes !== false) this._checkShapeFiles();
+        if (opts.cacheWorkspace !== false && typeof App !== 'undefined' && typeof App._cacheWorkspaceSlot === 'function') {
             try {
-                const json = JSON.parse(text);
-                if (!json.config) { alert('Invalid JSON  missing config.'); return; }
-                this._processImport(json);
-                this._checkShapeFiles(); // Warn if shapes not loaded
-            } catch (err) { alert('JSON parse error: ' + err.message); }
-        };
-        reader.readAsText(file); input.value = '';
+                await App._cacheWorkspaceSlot('bj-f-json', [file], file.name || 'table-config.json');
+            } catch (e) {
+                console.warn('[BuilderJSON] Could not cache imported JSON file:', e);
+            }
+        }
+        return true;
     },
 
     // Check for shape atlas + warn user if missing
@@ -4400,8 +4461,8 @@ const BuilderJSON = {
         return entries.length > 20 ? 'all_user' : 'modded_only';
     },
 
-    _processImport(json) {
-        this.clearTableBitmap({ silent: true });
+    _processImport(json, opts = {}) {
+        this.clearTableBitmap({ silent: true, preserveCache: !!opts.preserveBitmapCache });
         this.importedConfig = json;
         this.importFormat = this._detectFormat(json);
         this.importedToys = [];
@@ -7964,7 +8025,7 @@ const BuilderJSON = {
         row.id = 'bj-ne-row-' + portId;
         row.innerHTML = '<span style="color:#f5a623;font-size:0.5rem;padding-left:4px;">NEW New layer  use Builder controls or type effect code above...</span>';
         layerDiv.appendChild(row);
-        row.scrollIntoView({ behavior:'smooth', block:'nearest' });
+        this._scrollElementIntoNearestView(row, { align:'nearest' });
     },
 
     _resetNewEffectPlaceholder() {
@@ -8229,7 +8290,7 @@ const BuilderJSON = {
         // Scroll to first new row
         if (highlightStart !== undefined) {
             const newRow = document.getElementById('bjlr-' + toy.portId + '-' + highlightStart);
-            if (newRow) newRow.scrollIntoView({ behavior:'smooth', block:'center' });
+            if (newRow) this._scrollElementIntoNearestView(newRow, { align:'center' });
         }
     },
 
@@ -9532,6 +9593,11 @@ const BuilderJSON = {
         const tib = document.getElementById('bjson-toy-icons'); if (tib) { tib.style.display = 'none'; tib.innerHTML = ''; }
         this._disableVerticalStrips();
         this.clearTableBitmap({ silent: true });
+        if (typeof App !== 'undefined' && typeof App._removeWorkspaceSlot === 'function') {
+            App._removeWorkspaceSlot('bj-f-json').catch?.(err => {
+                console.warn('[BuilderJSON] Could not clear cached imported JSON slot:', err);
+            });
+        }
         this._bitmapPreviewHold = false;
         this._bitmapPreviewLoop = true;
         this._bitmapPreviewFrame = 0;
