@@ -4,6 +4,10 @@ DOF Pro Simulator/JSON Builder is a browser-based workflow tool for **DirectOutp
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Version](https://img.shields.io/badge/version-v1.2-blue.svg)
+---
+(https://img.youtube.com/vi/6PHjqIAE4Ks/maxresdefault.jpg)](https://www.youtube.com/watch?v=6PHjqIAE4Ks)
+
+<a href="https://wottenad.github.io/DOF-Pro-Simulator-JSON-Builder/">SEE IT IN ACTION!</a>
 
 It combines four major capabilities in one app:
 
