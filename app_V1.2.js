@@ -587,6 +587,77 @@ const App = {
         return `hsl(${hue}, 65%, 52%)`;
     },
 
+    _normalizeCabinetName(name) {
+        return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    },
+
+    // Matrix-like labels are only a weak tiebreaker. Geometry + mapping decide first.
+    _isLikelyMatrixName(name) {
+        const n = this._normalizeCabinetName(name);
+        return /\bmatrix\b|\bbackmatrix\b|\bdmd\b|\bmx\b/.test(n);
+    },
+
+    _looksLikeCabinetJson(json) {
+        if (!json || typeof json !== 'object' || Array.isArray(json)) return false;
+        if (String(json.type || '').trim().toLowerCase() === 'cabinet') return true;
+        if (json.combos && typeof json.combos === 'object') return true;
+        if (Array.isArray(json.devices)) return true;
+        return false;
+    },
+
+    _chooseMatrixStrip(stripDefs = [], outputNameToNum = new Map()) {
+        const candidates = stripDefs
+            .map((strip, idx) => {
+                const w = parseInt(strip.width, 10) || 0;
+                const h = parseInt(strip.height, 10) || 0;
+                const outputNum = outputNameToNum.get(strip.name) ?? null;
+                let score = 0;
+
+                if (w > 1 && h > 1) score += 100000;
+                score += (w * h);
+                if (outputNum !== null) score += 1000;
+                if (this._isLikelyMatrixName(strip.name)) score += 250;
+
+                return { ...strip, idx, w, h, outputNum, score };
+            })
+            .filter(strip => strip.w > 1 && strip.h > 1);
+
+        if (!candidates.length) return null;
+
+        candidates.sort((a, b) =>
+            (b.score - a.score) ||
+            ((b.w * b.h) - (a.w * a.h)) ||
+            (a.idx - b.idx)
+        );
+
+        return candidates[0];
+    },
+
+    _getDetectedMatrixOutputNum() {
+        const matrix = this.data.cabinet?.matrix;
+        if (!matrix) return null;
+        if (Number.isInteger(matrix.outputNum)) return matrix.outputNum;
+
+        const targetName = this._normalizeCabinetName(matrix.name);
+        if (!targetName) return null;
+
+        for (const [outNum, name] of this.data.cabinet.toyMap.entries()) {
+            if (this._normalizeCabinetName(name) === targetName) return outNum;
+        }
+        return null;
+    },
+
+    _isDetectedMatrixOutput(outputNum, hwName = null) {
+        const matrixOut = this._getDetectedMatrixOutputNum();
+        if (Number.isInteger(matrixOut) && outputNum === matrixOut) return true;
+
+        const matrix = this.data.cabinet?.matrix;
+        if (!matrix?.name) return false;
+
+        const candidateName = this._normalizeCabinetName(hwName ?? this.data.cabinet.toyMap.get(outputNum));
+        return !!candidateName && candidateName === this._normalizeCabinetName(matrix.name);
+    },
+
     //  v13.11.3+: Hybrid columnoutput mapping
     // WS2811 commonly uses non-contiguous outputs [1,4,7,10,13,16].
     // 1) 6-column rows: sparse mapping (Nth column -> Nth assigned output).
@@ -3274,7 +3345,7 @@ const App = {
             const layers = colStr.split('/');
             layers.forEach(layer => {
                 if (new RegExp('\\b' + trigger + '\\b').test(layer)) {
-                    if(hwName && !this.data.cabinet.stripNames.has(hwName) && hwName !== 'Matrix') {
+                    if(hwName && !this.data.cabinet.stripNames.has(hwName) && !this._isDetectedMatrixOutput(outputNum, hwName)) {
                         affectedToys.add(hwName);
                     }
                 }
@@ -3429,32 +3500,56 @@ const App = {
             const m = block.match(new RegExp('<' + tag + '>\\s*([\\s\\S]*?)\\s*<\\/' + tag + '>', 'i'));
             return m ? m[1].trim() : '';
         };
-        const getLedStripName = block => {
-            const raw = getTag(block, 'Name') || getTag(block, 'n');
-            // Normalize case-insensitive 'matrix'  canonical 'Matrix' for matching
-            return (raw && raw.toLowerCase() === 'matrix') ? 'Matrix' : raw;
-        };
+        const getLedStripName = block => getTag(block, 'Name') || getTag(block, 'n');
 
-        // Parse LedStrip blocks
+        // Parse LedWizEquivalentOutput blocks first so matrix selection can use output mapping.
+        this.data.cabinet.toyMap.clear();
+        const outputBlocks = [...text.matchAll(/<LedWizEquivalentOutput>([\s\S]*?)<\/LedWizEquivalentOutput>/gi)].map(m => m[1]);
+        const outputNameToNum = new Map();
+        for(const block of outputBlocks) {
+            const num = parseInt(getTag(block, 'LedWizEquivalentOutputNumber'), 10);
+            const name = getTag(block, 'OutputName');
+            if(!isNaN(num) && name) {
+                this.data.cabinet.toyMap.set(num, name);
+                outputNameToNum.set(name, num);
+            }
+        }
+
+        // Parse LedStrip blocks and derive matrix from geometry, not a hard-coded label.
         const stripBlocks = [...text.matchAll(/<LedStrip>([\s\S]*?)<\/LedStrip>/gi)].map(m => m[1]);
-
-        const matrixBlock = stripBlocks.find(b => getLedStripName(b) === 'Matrix');
-        if(matrixBlock) {
-            this.data.cabinet.matrix = {
-                w: parseInt(getTag(matrixBlock, 'Width')),
-                h: parseInt(getTag(matrixBlock, 'Height'))
+        const stripDefs = stripBlocks.map((block, idx) => {
+            const name = getLedStripName(block);
+            const width = parseInt(getTag(block, 'Width'), 10) || 0;
+            const height = parseInt(getTag(block, 'Height'), 10) || 0;
+            return {
+                idx,
+                name,
+                width,
+                height,
+                leds: parseInt(getTag(block, 'NumberOfLedsStrip'), 10) ||
+                      height ||
+                      width ||
+                      1
             };
+        });
+
+        const matrixStrip = this._chooseMatrixStrip(stripDefs, outputNameToNum);
+        this.data.cabinet.matrix = matrixStrip ? {
+            name: matrixStrip.name,
+            w: matrixStrip.w,
+            h: matrixStrip.h,
+            outputNum: matrixStrip.outputNum
+        } : null;
+        if(matrixStrip) {
+            console.log(`%c[CABINET] Matrix detected from strip geometry: "${this.data.cabinet.matrix.name}" ${this.data.cabinet.matrix.w}x${this.data.cabinet.matrix.h} output ${this.data.cabinet.matrix.outputNum ?? 'unknown'}`, 'color:#9de2ff;font-weight:bold;');
             this.renderMatrixGrid();
         }
 
-        this.data.cabinet.strips = stripBlocks
-            .filter(b => getLedStripName(b) !== 'Matrix')
-            .map(b => ({
-                name: getLedStripName(b),
-                // FIXED v13.6: Try NumberOfLedsStrip first (most common tag), then Height, then Width
-                leds: parseInt(getTag(b, 'NumberOfLedsStrip')) || 
-                      parseInt(getTag(b, 'Height')) || 
-                      parseInt(getTag(b, 'Width')) || 1
+        this.data.cabinet.strips = stripDefs
+            .filter(strip => !matrixStrip || strip.idx !== matrixStrip.idx)
+            .map(strip => ({
+                name: strip.name,
+                leds: strip.leds
             }));
 
         this.data.cabinet.stripNames.clear();
@@ -3468,23 +3563,14 @@ const App = {
         });
         console.log('Strip Names Set:', Array.from(this.data.cabinet.stripNames));
 
-        // Parse LedWizEquivalentOutput blocks
-        const outputBlocks = [...text.matchAll(/<LedWizEquivalentOutput>([\s\S]*?)<\/LedWizEquivalentOutput>/gi)].map(m => m[1]);
-        for(const block of outputBlocks) {
-            const num = parseInt(getTag(block, 'LedWizEquivalentOutputNumber'));
-            const name = getTag(block, 'OutputName');
-            // Normalize case-insensitive 'matrix'  canonical 'Matrix'
-            const normalizedName = (name && name.toLowerCase() === 'matrix') ? 'Matrix' : name;
-            if(!isNaN(num) && normalizedName) this.data.cabinet.toyMap.set(num, normalizedName);
-        }
-        
         // DEBUG v13.6: Log toyMap to verify output mappings and find name mismatches
         console.log('=== TOY MAP (Output#  Name) ===');
         Array.from(this.data.cabinet.toyMap.entries())
             .sort((a, b) => a[0] - b[0])
             .forEach(([num, name]) => {
+                const isMatrix = this._isDetectedMatrixOutput(num, name);
                 const isStrip = this.data.cabinet.stripNames.has(name);
-                console.log(`Output ${num}: "${name}" ${isStrip ? '[STRIP]' : '[TOY]'}`);
+                console.log(`Output ${num}: "${name}" ${isMatrix ? '[MATRIX]' : isStrip ? '[STRIP]' : '[TOY]'}`);
             });
         
         // v13.8.1 VALIDATION: Warn if LED strip names don't match output names
@@ -3853,6 +3939,11 @@ const App = {
         try {
             const text = await file.text();
             const json = JSON.parse(text);
+            if (!this._looksLikeCabinetJson(json)) {
+                alert(`Cabinet JSON Validation Error\n\n${file.name} does not appear to contain cabinet combo/device metadata.\n\nExpected content like "type":"cabinet", "devices", or "combos".`);
+                document.getElementById('system-status').innerText = `ERROR: Invalid Cabinet JSON`;
+                return;
+            }
             this.parseComboDefinitions(json);
             document.getElementById('system-status').innerText = `Cabinet JSON loaded. ${this.data.combos.size} combos found.`;
         } catch(e) {
@@ -3948,7 +4039,7 @@ const App = {
     _resolveCapabilitySurface(controllerId, outputNum) {
         const hwName = this.data.cabinet?.toyMap?.get(outputNum) || '';
         if (controllerId === 30) {
-            if (hwName === 'Matrix') return { surface: 'matrix', outputName: hwName };
+            if (this._isDetectedMatrixOutput(outputNum, hwName)) return { surface: 'matrix', outputName: hwName };
             if (this.data.cabinet?.stripNames?.has(hwName)) return { surface: 'strip', outputName: hwName };
             return { surface: 'unknown', outputName: hwName || '' };
         }
@@ -4394,7 +4485,6 @@ const App = {
         rawCols.forEach((colStr, colIdx) => {
             const outputNum = this._getOutputNum(colIdx, rawCols.length);
             const hwName = outputNum ? this.data.cabinet.toyMap.get(outputNum) : null;
-            const isMatrix = hwName === 'Matrix';
             const isStrip  = hwName && this.data.cabinet.stripNames.has(hwName);
             // Only scan matrix column and non-hardware columns for @var@ toys
             // (flashers on matrix; strips handled separately)
@@ -4429,7 +4519,7 @@ const App = {
             const hwName = this.data.cabinet.toyMap.get(outputNum);
             if(hwName && val.trim() !== "0" && val.trim() !== "" 
                && !this.data.cabinet.stripNames.has(hwName) 
-               && hwName !== 'Matrix') {
+               && !this._isDetectedMatrixOutput(outputNum, hwName)) {
                 addUniqueToy(hwName, 'mech');
             }
         });
@@ -6048,8 +6138,8 @@ const App = {
             }
             return;
         }
-        if(hwName === 'Matrix') {
-            // Explicitly named Matrix output  color fill on matrix
+        if(this._isDetectedMatrixOutput(outputNum, hwName)) {
+            // Content-derived matrix output  color fill on matrix
             const eff = { ...commonMatrixEff, shapeName: null };
             this.data.matrixEffects.push(eff);
             if(minDur > 0) this.data.heldEffects.push({ ...eff, heldUntil: Date.now() + wait + minDur });
@@ -6423,7 +6513,7 @@ const App = {
             // Only render columns that have real hardware in toyMap
             if (!toyName) return;
 
-            const isMatrix = toyName === 'Matrix';
+            const isMatrix = this._isDetectedMatrixOutput(outputNum, toyName);
             const isStrip = this.data.cabinet.stripNames.has(toyName);
             const tagLabel = isMatrix ? '' : isStrip ? '' : '';
 
@@ -6509,10 +6599,7 @@ const App = {
         // Color the matrix container
         const matrixEl = document.getElementById('led-matrix');
         if(matrixEl) {
-            let matrixOutputNum = null;
-            for(const [outNum, hwName] of this.data.cabinet.toyMap.entries()) {
-                if(hwName === 'Matrix') { matrixOutputNum = outNum; break; }
-            }
+            const matrixOutputNum = this._getDetectedMatrixOutputNum();
             if(matrixOutputNum) {
                 matrixEl.style.outline = `3px solid ${this.getOutputColor(matrixOutputNum)}`;
                 matrixEl.style.outlineOffset = '2px';
@@ -8210,10 +8297,7 @@ const App = {
 
     // Get the output number for the Matrix hardware (used for sparkle injection)
     _animSimGetMatrixOutputNum() {
-        for (const [outNum, name] of this.data.cabinet.toyMap.entries()) {
-            if (name === 'Matrix') return outNum;
-        }
-        return null;
+        return this._getDetectedMatrixOutputNum();
     },
 
     // Update the status line below the dropdown for the selected entry

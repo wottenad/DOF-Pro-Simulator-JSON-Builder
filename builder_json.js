@@ -7549,7 +7549,16 @@ const BuilderJSON = {
                     this._updateLayerNav(sn, pgStart, sLen);
                     this._autoFitGenStr({ persist: false });
                     this._highlightTriggerRows();
-                    this._restoreScopedPreviewAfterLayerLoad(sn);
+                    const restoredPreview = this._restoreScopedPreviewAfterLayerLoad(sn);
+                    if (!restoredPreview && toy?.portId && this._activeTrigger) {
+                        const fallbackScene = this.buildSceneForTrigger({
+                            portId: toy.portId,
+                            trigger: this._activeTrigger,
+                            syncActive: this._syncActive
+                        });
+                        this._setPreviewScene(fallbackScene);
+                        Builder._resetPreviewTiming();
+                    }
                     this._syncGenStrHighlightToCurrentLayer();
                     return;
                 }
